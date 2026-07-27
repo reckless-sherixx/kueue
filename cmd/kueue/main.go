@@ -66,6 +66,7 @@ import (
 	"sigs.k8s.io/kueue/pkg/controller/elasticjobs"
 	"sigs.k8s.io/kueue/pkg/controller/failurerecovery"
 	"sigs.k8s.io/kueue/pkg/controller/jobframework"
+	"sigs.k8s.io/kueue/pkg/controller/jobs"
 	"sigs.k8s.io/kueue/pkg/controller/tas"
 	tasindexer "sigs.k8s.io/kueue/pkg/controller/tas/indexer"
 	"sigs.k8s.io/kueue/pkg/controller/workloaddispatcher"
@@ -91,13 +92,12 @@ import (
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
-	// Ensure linking of the job controllers.
-	_ "sigs.k8s.io/kueue/pkg/controller/jobs"
 )
 
 var (
-	scheme   = runtime.NewScheme()
-	setupLog = ctrl.Log.WithName("setup")
+	scheme             = runtime.NewScheme()
+	setupLog           = ctrl.Log.WithName("setup")
+	integrationManager = jobs.NewIntegrationManager()
 )
 
 func init() {
@@ -114,7 +114,7 @@ func init() {
 	utilruntime.Must(inventoryv1alpha1.AddToScheme(scheme))
 	// Add any additional framework integration types.
 	utilruntime.Must(
-		jobframework.ForEachIntegration(func(_ string, cb jobframework.IntegrationCallbacks) error {
+		integrationManager.ForEachIntegration(func(_ string, cb jobframework.IntegrationCallbacks) error {
 			if cb.AddToScheme != nil {
 				return cb.AddToScheme(scheme)
 			}
@@ -161,7 +161,7 @@ func main() {
 	}
 
 	// Validates the configuration after it has been loaded and feature gates have been set.
-	if err := config.Validate(&cfg, scheme).ToAggregate(); err != nil {
+	if err := config.Validate(&cfg, scheme, integrationManager).ToAggregate(); err != nil {
 		setupLog.Error(err, "Unable to validate the configuration")
 		os.Exit(1)
 	}
@@ -354,7 +354,7 @@ func main() {
 	}
 	queues := qcache.NewManager(mgr.GetClient(), cCache, requeuer, queueOptions...)
 
-	if err := setupIndexes(ctx, mgr, &cfg); err != nil {
+	if err := setupIndexes(ctx, mgr, &cfg, integrationManager); err != nil {
 		setupLog.Error(err, "Unable to setup indexes")
 		os.Exit(1)
 	}
@@ -393,7 +393,7 @@ func main() {
 		DRAMapper:              draMapper,
 		DRABackedResources:     draBackedResources,
 	}
-	if err := setupControllers(ctx, mgr, cCache, queues, &cfg, serverVersionFetcher, controllerOpts); err != nil {
+	if err := setupControllers(ctx, mgr, cCache, queues, &cfg, serverVersionFetcher, integrationManager, controllerOpts); err != nil {
 		setupLog.Error(err, "Unable to setup controllers")
 		os.Exit(1)
 	}
@@ -427,7 +427,7 @@ func main() {
 	}
 }
 
-func setupIndexes(ctx context.Context, mgr ctrl.Manager, cfg *configapi.Configuration) error {
+func setupIndexes(ctx context.Context, mgr ctrl.Manager, cfg *configapi.Configuration, integrationManager *jobframework.IntegrationManager) error {
 	err := indexer.Setup(ctx, mgr.GetFieldIndexer())
 	if err != nil {
 		return err
@@ -462,9 +462,10 @@ func setupIndexes(ctx context.Context, mgr ctrl.Manager, cfg *configapi.Configur
 	}
 
 	indexOpts := []jobframework.Option{
+		jobframework.WithIntegrationManager(integrationManager),
 		jobframework.WithEnabledFrameworks(cfg.Integrations.Frameworks),
 	}
-	return jobframework.SetupIndexes(ctx, mgr.GetFieldIndexer(), indexOpts...)
+	return integrationManager.SetupIndexes(ctx, mgr.GetFieldIndexer(), indexOpts...)
 }
 
 func setupControllers(
@@ -474,6 +475,7 @@ func setupControllers(
 	queues *qcache.Manager,
 	cfg *configapi.Configuration,
 	serverVersionFetcher *kubeversion.ServerVersionFetcher,
+	integrationManager *jobframework.IntegrationManager,
 	opts core.SetupControllersOpts,
 ) error {
 	if failedCtrl, err := core.SetupControllers(mgr, queues, cCache, cfg, opts); err != nil {
@@ -502,7 +504,7 @@ func setupControllers(
 	}
 
 	if features.Enabled(features.MultiKueue) {
-		adapters, err := jobframework.GetMultiKueueAdapters(sets.New(cfg.Integrations.Frameworks...))
+		adapters, err := integrationManager.GetMultiKueueAdapters(sets.New(cfg.Integrations.Frameworks...))
 		if err != nil {
 			return fmt.Errorf("could not get the enabled multikueue adapters: %w", err)
 		}
@@ -558,6 +560,7 @@ func setupControllers(
 	}
 
 	jfOpts := []jobframework.Option{
+		jobframework.WithIntegrationManager(integrationManager),
 		jobframework.WithManageJobsWithoutQueueName(cfg.ManageJobsWithoutQueueName),
 		jobframework.WithWaitForPodsReady(cfg.WaitForPodsReady),
 		jobframework.WithKubeServerVersion(serverVersionFetcher),
@@ -577,7 +580,7 @@ func setupControllers(
 	}
 	jfOpts = append(jfOpts, jobframework.WithManagedJobsNamespaceSelector(nsSelector))
 
-	if err := jobframework.SetupControllers(ctx, mgr, setupLog, jfOpts...); err != nil {
+	if err := integrationManager.SetupControllers(ctx, mgr, setupLog, jfOpts...); err != nil {
 		return fmt.Errorf(
 			"unable to create controller or webhook for kubernetesVersion %v: %w",
 			serverVersionFetcher.GetServerVersion(),

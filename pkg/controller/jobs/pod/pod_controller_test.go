@@ -55,9 +55,6 @@ import (
 	utiltestingapi "sigs.k8s.io/kueue/pkg/util/testing/v1beta2"
 	testingpod "sigs.k8s.io/kueue/pkg/util/testingjobs/pod"
 	workloadpatching "sigs.k8s.io/kueue/pkg/workload/patching"
-
-	_ "sigs.k8s.io/kueue/pkg/controller/jobs/job"
-	_ "sigs.k8s.io/kueue/pkg/controller/jobs/raycluster"
 )
 
 type keyUIDs struct {
@@ -6633,7 +6630,8 @@ func TestReconciler_ErrorFinalizingPod(t *testing.T) {
 }
 
 func TestIsPodOwnerManagedByQueue(t *testing.T) {
-	t.Cleanup(jobframework.EnableIntegrationsForTest(t, "batch/job", "ray.io/raycluster"))
+	integrationManager := newTestIntegrationManager(t)
+	t.Cleanup(integrationManager.EnableIntegrationsForTest(t, "batch/job", "ray.io/raycluster"))
 	testCases := map[string]struct {
 		ownerReference metav1.OwnerReference
 		wantRes        bool
@@ -6674,7 +6672,7 @@ func TestIsPodOwnerManagedByQueue(t *testing.T) {
 
 			pod.OwnerReferences = append(pod.OwnerReferences, tc.ownerReference)
 
-			if managedByKueue := jobframework.IsOwnerManagedByKueueForObject(pod); tc.wantRes != managedByKueue {
+			if managedByKueue := integrationManager.IsOwnerManagedByKueueForObject(pod); tc.wantRes != managedByKueue {
 				t.Errorf("Unexpected 'IsOwnerManagedByKueueForObject' result\n want: %t\n got: %t)", tc.wantRes, managedByKueue)
 			}
 		})

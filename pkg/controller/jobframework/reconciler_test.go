@@ -51,6 +51,7 @@ import (
 	kueueconstants "sigs.k8s.io/kueue/pkg/constants"
 	"sigs.k8s.io/kueue/pkg/controller/constants"
 	"sigs.k8s.io/kueue/pkg/controller/core/indexer"
+	"sigs.k8s.io/kueue/pkg/controller/jobs"
 	"sigs.k8s.io/kueue/pkg/controller/jobs/job"
 	"sigs.k8s.io/kueue/pkg/features"
 	"sigs.k8s.io/kueue/pkg/podset"
@@ -63,8 +64,6 @@ import (
 	"sigs.k8s.io/kueue/pkg/util/testingjobs/jobset"
 	testingmpijob "sigs.k8s.io/kueue/pkg/util/testingjobs/mpijob"
 	"sigs.k8s.io/kueue/pkg/workloadslicing"
-
-	_ "sigs.k8s.io/kueue/pkg/controller/jobs"
 
 	. "sigs.k8s.io/kueue/pkg/controller/jobframework"
 )
@@ -899,8 +898,9 @@ func TestFindAncestorJobManagedByKueue(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			t.Cleanup(EnableIntegrationsForTest(t, tc.integrations...))
-			t.Cleanup(EnableExternalIntegrationsForTest(t, tc.externalFrameworks...))
+			integrationManager := jobs.NewIntegrationManager()
+			t.Cleanup(integrationManager.EnableIntegrationsForTest(t, tc.integrations...))
+			t.Cleanup(integrationManager.EnableExternalIntegrationsForTest(t, tc.externalFrameworks...))
 			ctx, _ := utiltesting.ContextWithLog(t)
 			recorder := &utiltesting.EventRecorder{}
 			builder := utiltesting.NewClientBuilder(kfmpi.AddToScheme, awv1beta2.AddToScheme, v1alpha2.AddToScheme)
@@ -909,7 +909,7 @@ func TestFindAncestorJobManagedByKueue(t *testing.T) {
 				builder = builder.WithObjects(tc.job)
 			}
 			cl := builder.Build()
-			gotManaged, gotErr := FindAncestorJobManagedByKueue(ctx, cl, tc.job, tc.manageJobsWithoutQueueName)
+			gotManaged, gotErr := integrationManager.FindAncestorJobManagedByKueue(ctx, cl, tc.job, tc.manageJobsWithoutQueueName)
 			if diff := cmp.Diff(tc.wantManaged, gotManaged, cmp.Options{
 				cmpopts.IgnoreFields(metav1.ObjectMeta{}, "ResourceVersion"),
 				cmpopts.EquateEmpty(),
@@ -980,6 +980,16 @@ func TestProcessOptions(t *testing.T) {
 				t.Errorf("Unexpected error from ProcessOptions (-want,+got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestProcessOptionsWithIntegrationManager(t *testing.T) {
+	manager := NewIntegrationManager()
+
+	options := ProcessOptions(WithIntegrationManager(manager))
+
+	if options.IntegrationManager != manager {
+		t.Error("ProcessOptions() did not preserve the integration manager")
 	}
 }
 
